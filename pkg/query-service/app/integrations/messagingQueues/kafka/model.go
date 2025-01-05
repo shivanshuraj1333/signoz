@@ -40,7 +40,7 @@ type CeleryTask struct {
 
 type CeleryTasks interface {
 	GetKind() string
-	GetType() string
+	GetStatus() string
 	Set(string, string)
 }
 
@@ -48,11 +48,11 @@ func (r *CeleryTask) GetKind() string {
 	return r.status
 }
 
-func (r *CeleryTask) GetType() string {
+func (r *CeleryTask) GetStatus() string {
 	return r.status
 }
 
-func (r *CeleryTask) Set(Type, Kind string) {
-	r.status = Type
-	r.status = Kind
+func (r *CeleryTask) Set(kind, status string) {
+	r.kind = kind
+	r.status = kind
 }
