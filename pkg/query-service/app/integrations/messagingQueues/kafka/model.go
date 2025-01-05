@@ -22,3 +22,37 @@ type OnboardingResponse struct {
 	Message   string `json:"error_message"`
 	Status    string `json:"status"`
 }
+
+// QueueFilters
+// ToDo: add capability of dynamic filtering based on any of the filters
+type QueueFilters struct {
+	serviceName string
+	spanName    string
+	queue       string
+	destination string
+	kind        string
+}
+
+type CeleryTask struct {
+	kind   string
+	status string
+}
+
+type CeleryTasks interface {
+	GetKind() string
+	GetType() string
+	Set(string, string)
+}
+
+func (r *CeleryTask) GetKind() string {
+	return r.status
+}
+
+func (r *CeleryTask) GetType() string {
+	return r.status
+}
+
+func (r *CeleryTask) Set(Type, Kind string) {
+	r.status = Type
+	r.status = Kind
+}

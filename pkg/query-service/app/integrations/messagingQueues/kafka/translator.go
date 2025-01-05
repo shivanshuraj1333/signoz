@@ -328,7 +328,10 @@ func BuildClickHouseQuery(messagingQueue *MessagingQueue, queueType string, quer
 	}
 
 	var query string
-	if queryContext == "producer" {
+
+	if queryContext == "overview" {
+		query = generateOverviewSQL(start, end)
+	} else if queryContext == "producer" {
 		query = generateProducerSQL(start, end, topic, partition, queueType)
 	} else if queryContext == "consumer" {
 		consumerGroup, ok := messagingQueue.Variables["consumer_group"]
