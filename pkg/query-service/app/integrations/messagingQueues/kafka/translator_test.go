@@ -56,15 +56,6 @@ func TestBuildQRParamsWithCache(t *testing.T) {
 			wantErr:       false,
 			expectedPanel: v3.PanelTypeTable,
 		},
-		//{
-		//	name: "invalid query context",
-		//	messagingQueue: &MessagingQueue{
-		//		Start: time.Now().Add(-1 * time.Hour).UnixNano(),
-		//		End:   time.Now().UnixNano(),
-		//	},
-		//	queryContext: "invalid-context",
-		//	wantErr:      true,
-		//},
 	}
 
 	for _, tt := range tests {
