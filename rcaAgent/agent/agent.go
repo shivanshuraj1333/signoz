@@ -21,9 +21,9 @@ type Alert struct {
 	Labels       map[string]string `json:"labels"`
 	Annotations  map[string]string `json:"annotations"`
 	Status       string            `json:"status"`
-	StartTime    string            `json:"startTime"`
-	EndTime      string            `json:"endTime"`
-	GeneratorURL string            `json:"generatorURL"`
+	StartsAt     string            `json:"starts.at"`
+	EndsAt       string            `json:"ends.at"`
+	GeneratorURL string            `json:"generator.url"`
 	Fingerprint  string            `json:"fingerprint"`
 }
 
@@ -126,6 +126,19 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Error extracting query range request for alert %s: %v", alert.Fingerprint, err)
 			// Continue processing even if extraction fails - we'll store the alert without log data
 		} else {
+			// Use the alert's start and end times if available
+			if alert.StartsAt != "" {
+				if parsedStartTime, err := time.Parse(time.RFC3339, alert.StartsAt); err == nil {
+					queryRangeRequest.Start = parsedStartTime.UnixMilli()
+				}
+			}
+
+			if alert.EndsAt != "" && alert.EndsAt != "0001-01-01T00:00:00Z" {
+				if parsedEndTime, err := time.Parse(time.RFC3339, alert.EndsAt); err == nil {
+					queryRangeRequest.End = parsedEndTime.UnixMilli()
+				}
+			}
+
 			// Execute query range request
 			startTime := time.Now()
 			response, err = executeQueryRange(queryRangeRequest, s.config.SignOz)
@@ -257,6 +270,19 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 		} else {
 			// Set step from config
 			queryRangeRequest.Step = config.Query.Step
+
+			// Use the alert's start and end times if available
+			if alert.StartsAt != "" {
+				if parsedStartTime, err := time.Parse(time.RFC3339, alert.StartsAt); err == nil {
+					queryRangeRequest.Start = parsedStartTime.UnixMilli()
+				}
+			}
+
+			if alert.EndsAt != "" && alert.EndsAt != "0001-01-01T00:00:00Z" {
+				if parsedEndTime, err := time.Parse(time.RFC3339, alert.EndsAt); err == nil {
+					queryRangeRequest.End = parsedEndTime.UnixMilli()
+				}
+			}
 
 			// Execute query range request
 			startTime := time.Now()
