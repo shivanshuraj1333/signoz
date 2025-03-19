@@ -189,6 +189,26 @@ func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 	if ruleID == "" {
 		ruleID = alert.Labels["ruleid"] // Try alternate key if the standard one is empty
 	}
+	if ruleID == "" {
+		ruleID = alert.Labels["ruleId"] // Try camelCase variation
+	}
+	if ruleID == "" {
+		ruleID = alert.Labels["rule.id"] // Try dot notation variation
+	}
+
+	// If not found in labels, try annotations
+	if ruleID == "" && alert.Annotations != nil {
+		ruleID = alert.Annotations["rule_id"]
+		if ruleID == "" {
+			ruleID = alert.Annotations["ruleid"]
+		}
+		if ruleID == "" {
+			ruleID = alert.Annotations["ruleId"]
+		}
+		if ruleID == "" {
+			ruleID = alert.Annotations["rule.id"]
+		}
+	}
 
 	// Get service name from kubernetes metadata
 	serviceName := ""
@@ -385,6 +405,26 @@ func debugProcessAlert(alert Alert, config *Config) error {
 	ruleID := alert.Labels["rule_id"]
 	if ruleID == "" {
 		ruleID = alert.Labels["ruleid"] // Try alternate key if the standard one is empty
+	}
+	if ruleID == "" {
+		ruleID = alert.Labels["ruleId"] // Try camelCase variation
+	}
+	if ruleID == "" {
+		ruleID = alert.Labels["rule.id"] // Try dot notation variation
+	}
+
+	// If not found in labels, try annotations
+	if ruleID == "" && alert.Annotations != nil {
+		ruleID = alert.Annotations["rule_id"]
+		if ruleID == "" {
+			ruleID = alert.Annotations["ruleid"]
+		}
+		if ruleID == "" {
+			ruleID = alert.Annotations["ruleId"]
+		}
+		if ruleID == "" {
+			ruleID = alert.Annotations["rule.id"]
+		}
 	}
 
 	// Get service name from kubernetes metadata
