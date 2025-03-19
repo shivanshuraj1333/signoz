@@ -18,7 +18,7 @@ func main() {
 	// Parse command line flags
 	debug := flag.Bool("debug", false, "Run in debug mode")
 	alertFile := flag.String("alert-file", "", "Path to alert JSON file for debug mode")
-	fetchRules := flag.Bool("fetch-rules", false, "Fetch alert rules from API")
+	//fetchRules := flag.Bool("fetch-rules", false, "Fetch alert rules from API")
 	flag.Parse()
 
 	// Initialize database
@@ -47,14 +47,14 @@ func main() {
 		return
 	}
 
-	if *fetchRules {
-		log.Println("Fetching alert rules...")
-		if err := agent.FetchAlertRules(db, config.SignOz.RulesAPIBaseURL, config.SignOz.APIKey); err != nil {
-			log.Fatalf("Error fetching alert rules: %v", err)
-		}
-		log.Println("Finished fetching alert rules")
-		return
-	}
+	//if *fetchRules {
+	//	log.Println("Fetching alert rules...")
+	//	if err := agent.FetchAlertRules(db, config.SignOz.RulesAPIBaseURL, config.SignOz.APIKey); err != nil {
+	//		log.Fatalf("Error fetching alert rules: %v", err)
+	//	}
+	//	log.Println("Finished fetching alert rules")
+	//	return
+	//}
 
 	// Start server
 	server := agent.NewServer(config.Server.Port, db, config)
