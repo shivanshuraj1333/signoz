@@ -178,38 +178,21 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 		return fmt.Errorf("error unmarshaling alert JSON: %v", err)
 	}
 
-	// Extract composite query from logs URL
-	compositeQuery, err := extractCompositeQueryFromURL(alert.Annotations["related.logs"])
+	// Extract query range request from logs URL
+	queryRangeRequest, err := extractCompositeQueryFromURL(alert.Annotations["related.logs"])
 	if err != nil {
-		return fmt.Errorf("error extracting composite query: %v", err)
+		return fmt.Errorf("error extracting query range request: %v", err)
 	}
 
 	// Create query range request with proper time range
 	start, end := config.GetQueryTimeRange()
-	request := QueryRangeRequest{
-		Start:          start * 1000, // Convert to milliseconds
-		End:            end * 1000,   // Convert to milliseconds
-		Step:           config.Query.Step,
-		Variables:      make(map[string]interface{}),
-		CompositeQuery: compositeQuery,
-	}
+	queryRangeRequest.Start = start * 1000 // Convert to milliseconds
+	queryRangeRequest.End = end * 1000     // Convert to milliseconds
+	queryRangeRequest.Step = config.Query.Step
 
 	// Print the extracted composite query
 	fmt.Printf("Extracted Composite Query:\n")
-	jsonData, err := json.MarshalIndent(compositeQuery, "", "  ")
-	if err != nil {
-		return fmt.Errorf("error marshaling composite query: %v", err)
-	}
-	fmt.Println(string(jsonData))
-
-	// Print the complete request with all details
-	fmt.Printf("\nComplete Query Range Request:\n")
-	fmt.Printf("Start Time: %d\n", request.Start)
-	fmt.Printf("End Time: %d\n", request.End)
-	fmt.Printf("Step: %d\n", request.Step)
-	fmt.Printf("Variables: %v\n", request.Variables)
-	fmt.Printf("Composite Query:\n")
-	jsonData, err = json.MarshalIndent(request.CompositeQuery, "", "  ")
+	jsonData, err := json.MarshalIndent(queryRangeRequest.CompositeQuery, "", "  ")
 	if err != nil {
 		return fmt.Errorf("error marshaling composite query: %v", err)
 	}
@@ -217,7 +200,7 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 
 	// Print the full request JSON
 	fmt.Printf("\nFull Query Range Request JSON:\n")
-	jsonData, err = json.MarshalIndent(request, "", "  ")
+	jsonData, err = json.MarshalIndent(queryRangeRequest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("error marshaling request: %v", err)
 	}
@@ -225,7 +208,7 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 
 	// Execute query range request
 	startTime := time.Now()
-	response, err := executeQueryRange(request, config.SignOz)
+	response, err := executeQueryRange(queryRangeRequest, config.SignOz)
 	processingTime := int(time.Since(startTime).Milliseconds())
 
 	// Store alert metric in database with API response details
@@ -247,7 +230,7 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 		RuleID:             alert.Labels["rule_id"],
 		Severity:           alert.Labels["severity"],
 		AlertTypes:         GetAlertType(alert.Annotations),
-		CompositeQuery:     &compositeQuery,
+		CompositeQuery:     &queryRangeRequest.CompositeQuery,
 		APIStatusCode:      0,
 		APIResponse:        "error",
 		ProcessingTimeMs:   processingTime,

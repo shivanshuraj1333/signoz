@@ -2,10 +2,9 @@ package main
 
 import (
 	"flag"
+	"go.signoz.io/signoz/rcaAgent/agent"
 	"log"
 	"os"
-
-	"github.com/SigNoz/signoz/rcaAgent/agent"
 )
 
 func main() {
