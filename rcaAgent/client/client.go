@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
+	"os"
 )
 
 func main() {
@@ -20,7 +21,7 @@ func main() {
 	}
 
 	// Read alert JSON from file
-	alertJSON, err := ioutil.ReadFile(*alertFile)
+	alertJSON, err := os.ReadFile(*alertFile)
 	if err != nil {
 		log.Fatalf("Error reading alert file: %v", err)
 	}
@@ -33,7 +34,7 @@ func main() {
 	defer resp.Body.Close()
 
 	// Read the response body
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Fatalf("Error reading response: %v", err)
 	}

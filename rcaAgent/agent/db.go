@@ -4,8 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	v3 "go.signoz.io/signoz/pkg/query-service/model/v3"
 	"time"
+
+	v3 "go.signoz.io/signoz/pkg/query-service/model/v3"
 
 	"github.com/lib/pq"
 	_ "github.com/lib/pq"
@@ -36,6 +37,8 @@ type AlertMetric struct {
 	APIStatusCode      int
 	APIResponse        string
 	ProcessingTimeMs   int
+	ServiceName        string
+	LogBodies          []string
 }
 
 // GetDSN returns the database connection string
@@ -66,7 +69,8 @@ func InitDB(config *DBConfig) (*sql.DB, error) {
 
 // createTables creates the necessary database tables
 func createTables(db *sql.DB) error {
-	query := `
+	// Create initial table if it doesn't exist
+	initialTableQuery := `
 		CREATE TABLE IF NOT EXISTS alert_metrics (
 			id SERIAL PRIMARY KEY,
 			timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -93,8 +97,61 @@ func createTables(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_timestamp ON alert_metrics(timestamp);
 	`
 
-	_, err := db.Exec(query)
-	return err
+	if _, err := db.Exec(initialTableQuery); err != nil {
+		return err
+	}
+
+	// Check if service_name column exists
+	var serviceNameExists bool
+	err := db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1 
+			FROM information_schema.columns 
+			WHERE table_name = 'alert_metrics' AND column_name = 'service_name'
+		)
+	`).Scan(&serviceNameExists)
+
+	if err != nil {
+		return fmt.Errorf("error checking if service_name column exists: %v", err)
+	}
+
+	// Add service_name column if it doesn't exist
+	if !serviceNameExists {
+		_, err = db.Exec(`ALTER TABLE alert_metrics ADD COLUMN service_name TEXT`)
+		if err != nil {
+			return fmt.Errorf("error adding service_name column: %v", err)
+		}
+
+		// Create index on the new column
+		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_service_name ON alert_metrics(service_name)`)
+		if err != nil {
+			return fmt.Errorf("error creating index on service_name: %v", err)
+		}
+	}
+
+	// Check if log_bodies column exists
+	var logBodiesExists bool
+	err = db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1 
+			FROM information_schema.columns 
+			WHERE table_name = 'alert_metrics' AND column_name = 'log_bodies'
+		)
+	`).Scan(&logBodiesExists)
+
+	if err != nil {
+		return fmt.Errorf("error checking if log_bodies column exists: %v", err)
+	}
+
+	// Add log_bodies column if it doesn't exist
+	if !logBodiesExists {
+		_, err = db.Exec(`ALTER TABLE alert_metrics ADD COLUMN log_bodies TEXT[]`)
+		if err != nil {
+			return fmt.Errorf("error adding log_bodies column: %v", err)
+		}
+	}
+
+	return nil
 }
 
 // StoreAlertMetric stores an alert metric in the database
@@ -104,8 +161,8 @@ func StoreAlertMetric(db *sql.DB, metric *AlertMetric) error {
 			timestamp, alert_fingerprint, alert_name, alert_description,
 			alert_summary, alert_severity, kubernetes_metadata, rule_id,
 			severity, alert_types, composite_query, api_status_code,
-			api_response, processing_time_ms
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			api_response, processing_time_ms, service_name, log_bodies
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	`
 
 	// Convert alert types to string array
@@ -141,6 +198,8 @@ func StoreAlertMetric(db *sql.DB, metric *AlertMetric) error {
 		metric.APIStatusCode,
 		metric.APIResponse,
 		metric.ProcessingTimeMs,
+		metric.ServiceName,
+		pq.Array(metric.LogBodies),
 	)
 
 	return err

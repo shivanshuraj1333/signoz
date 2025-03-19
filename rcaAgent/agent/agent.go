@@ -91,48 +91,56 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Log alert ID
+	log.Printf("Processing alert: %s", alert.Fingerprint)
+
 	// Extract query range request from logs URL
 	queryRangeRequest, err := extractCompositeQueryFromURL(alert.Annotations["related.logs"])
 	if err != nil {
-		log.Printf("Error extracting query range request: %v", err)
+		log.Printf("Error extracting query range request for alert %s: %v", alert.Fingerprint, err)
 		http.Error(w, "Error extracting query range request", http.StatusBadRequest)
 		return
 	}
 
-	// Parse start and end times from the alert
-	startTime, err := time.Parse(time.RFC3339, alert.StartTime)
-	if err != nil {
-		log.Printf("Error parsing start time: %v", err)
-		http.Error(w, "Error parsing start time", http.StatusBadRequest)
-		return
-	}
-
-	endTime, err := time.Parse(time.RFC3339, alert.EndTime)
-	if err != nil {
-		log.Printf("Error parsing end time: %v", err)
-		http.Error(w, "Error parsing end time", http.StatusBadRequest)
-		return
-	}
-
-	// Update the extracted request with alert times
-	queryRangeRequest.Start = startTime.UnixMilli()
-	queryRangeRequest.End = endTime.UnixMilli()
-	// Keep the step and variables from the parsed URL
-
-	// Print the request for debugging
-	requestJSON, err := json.MarshalIndent(queryRangeRequest, "", "  ")
-	if err != nil {
-		log.Printf("Error marshaling request: %v", err)
-	} else {
-		log.Printf("Query Range Request:\n%s", string(requestJSON))
-	}
-
 	// Execute query range request
-	startTime = time.Now()
+	startTime := time.Now()
 	response, err := executeQueryRange(queryRangeRequest, s.config.SignOz)
 	processingTime := int(time.Since(startTime).Milliseconds())
 
-	// Store alert metric in database with API response details
+	// Extract Kubernetes metadata from labels and populate properly
+	kubernetesMetadata := extractKubernetesMetadata(alert.Labels)
+
+	// Get rule_id from labels
+	ruleID := alert.Labels["rule_id"]
+	if ruleID == "" {
+		ruleID = alert.Labels["ruleid"] // Try alternate key if the standard one is empty
+	}
+
+	// Get service name from kubernetes metadata
+	serviceName := ""
+	if val, ok := kubernetesMetadata["service.name"]; ok {
+		serviceName = val
+	}
+
+	// Extract additional Kubernetes metadata from response
+	var responseK8sMetadata map[string]string
+	if err == nil && response != nil {
+		responseK8sMetadata = extractKubernetesMetadataFromResponse(response)
+
+		// Check if we can get a service name from the response
+		if serviceName == "" {
+			if val, ok := responseK8sMetadata["service.name"]; ok && val != "" {
+				serviceName = val
+			}
+		}
+
+		// Merge with the existing metadata, preferring response values if duplicates
+		for key, value := range responseK8sMetadata {
+			kubernetesMetadata[key] = value
+		}
+	}
+
+	// Create alert metric
 	metric := &AlertMetric{
 		Timestamp:          time.Now(),
 		AlertFingerprint:   alert.Fingerprint,
@@ -140,31 +148,48 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		AlertDescription:   alert.Annotations["description"],
 		AlertSummary:       alert.Annotations["summary"],
 		AlertSeverity:      alert.Labels["severity"],
-		KubernetesMetadata: extractKubernetesMetadata(alert.Labels),
-		RuleID:             alert.Labels["rule_id"],
+		KubernetesMetadata: kubernetesMetadata,
+		RuleID:             ruleID,
 		Severity:           alert.Labels["severity"],
 		AlertTypes:         GetAlertType(alert.Annotations),
 		CompositeQuery:     &queryRangeRequest.CompositeQuery,
 		APIStatusCode:      0,
 		APIResponse:        "error",
 		ProcessingTimeMs:   processingTime,
+		ServiceName:        serviceName,
+		LogBodies:          []string{},
 	}
 
+	// Update API response details
 	if err != nil {
-		log.Printf("Error executing query range: %v", err)
+		log.Printf("Error executing query range for alert %s: %v", alert.Fingerprint, err)
 		metric.APIResponse = fmt.Sprintf("error: %v", err)
+		metric.APIStatusCode = http.StatusInternalServerError
 		http.Error(w, "Error executing query range", http.StatusInternalServerError)
 	} else {
+		// Set status code for successful API call
 		metric.APIStatusCode = http.StatusOK
-		metric.APIResponse = fmt.Sprintf("status: %s, error: %s", response.Status, response.Error)
+
+		// Store complete response for debugging
+		responseJSON, jsonErr := json.Marshal(response)
+		if jsonErr == nil {
+			metric.APIResponse = string(responseJSON)
+
+			// Extract log bodies
+			metric.LogBodies = extractLogBodies(response)
+		} else {
+			metric.APIResponse = fmt.Sprintf("status: %s, error: %s", response.Status, response.Error)
+		}
 	}
 
 	// Store the metric
 	if err := StoreAlertMetric(s.db, metric); err != nil {
-		log.Printf("Error storing alert metric: %v", err)
+		log.Printf("Error storing alert metric for alert %s: %v", alert.Fingerprint, err)
 		http.Error(w, "Error storing alert metric", http.StatusInternalServerError)
 		return
 	}
+
+	log.Printf("Alert %s processed successfully", alert.Fingerprint)
 
 	// Return success response
 	w.WriteHeader(http.StatusOK)
@@ -178,33 +203,15 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 		return fmt.Errorf("error unmarshaling alert JSON: %v", err)
 	}
 
+	fmt.Printf("Processing alert: %s\n", alert.Fingerprint)
+
 	// Extract query range request from logs URL
 	queryRangeRequest, err := extractCompositeQueryFromURL(alert.Annotations["related.logs"])
 	if err != nil {
-		return fmt.Errorf("error extracting query range request: %v", err)
+		return fmt.Errorf("error extracting query range request for alert %s: %v", alert.Fingerprint, err)
 	}
 
-	// Create query range request with proper time range
-	start, end := config.GetQueryTimeRange()
-	queryRangeRequest.Start = start * 1000 // Convert to milliseconds
-	queryRangeRequest.End = end * 1000     // Convert to milliseconds
 	queryRangeRequest.Step = config.Query.Step
-
-	// Print the extracted composite query
-	fmt.Printf("Extracted Composite Query:\n")
-	jsonData, err := json.MarshalIndent(queryRangeRequest.CompositeQuery, "", "  ")
-	if err != nil {
-		return fmt.Errorf("error marshaling composite query: %v", err)
-	}
-	fmt.Println(string(jsonData))
-
-	// Print the full request JSON
-	fmt.Printf("\nFull Query Range Request JSON:\n")
-	jsonData, err = json.MarshalIndent(queryRangeRequest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("error marshaling request: %v", err)
-	}
-	fmt.Println(string(jsonData))
 
 	// Execute query range request
 	startTime := time.Now()
@@ -218,6 +225,39 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 	}
 	defer db.Close()
 
+	// Extract Kubernetes metadata from labels
+	kubernetesMetadata := extractKubernetesMetadata(alert.Labels)
+
+	// Get rule_id from labels
+	ruleID := alert.Labels["rule_id"]
+	if ruleID == "" {
+		ruleID = alert.Labels["ruleid"] // Try alternate key if the standard one is empty
+	}
+
+	// Get service name from kubernetes metadata
+	serviceName := ""
+	if val, ok := kubernetesMetadata["service.name"]; ok {
+		serviceName = val
+	}
+
+	// Extract additional Kubernetes metadata from response
+	var responseK8sMetadata map[string]string
+	if err == nil && response != nil {
+		responseK8sMetadata = extractKubernetesMetadataFromResponse(response)
+
+		// Check if we can get a service name from the response
+		if serviceName == "" {
+			if val, ok := responseK8sMetadata["service.name"]; ok && val != "" {
+				serviceName = val
+			}
+		}
+
+		// Merge with the existing metadata, preferring response values if duplicates
+		for key, value := range responseK8sMetadata {
+			kubernetesMetadata[key] = value
+		}
+	}
+
 	// Create alert metric with API response details
 	metric := &AlertMetric{
 		Timestamp:          time.Now(),
@@ -226,44 +266,50 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 		AlertDescription:   alert.Annotations["description"],
 		AlertSummary:       alert.Annotations["summary"],
 		AlertSeverity:      alert.Labels["severity"],
-		KubernetesMetadata: extractKubernetesMetadata(alert.Labels),
-		RuleID:             alert.Labels["rule_id"],
+		KubernetesMetadata: kubernetesMetadata,
+		RuleID:             ruleID,
 		Severity:           alert.Labels["severity"],
 		AlertTypes:         GetAlertType(alert.Annotations),
 		CompositeQuery:     &queryRangeRequest.CompositeQuery,
 		APIStatusCode:      0,
 		APIResponse:        "error",
 		ProcessingTimeMs:   processingTime,
+		ServiceName:        serviceName,
+		LogBodies:          []string{},
 	}
 
+	// Update API response details
 	if err != nil {
+		fmt.Printf("Error executing query range for alert %s: %v\n", alert.Fingerprint, err)
 		metric.APIResponse = fmt.Sprintf("error: %v", err)
+		metric.APIStatusCode = http.StatusInternalServerError
 		return fmt.Errorf("error executing query range: %v", err)
 	} else {
 		metric.APIStatusCode = http.StatusOK
-		metric.APIResponse = fmt.Sprintf("status: %s, error: %s", response.Status, response.Error)
-	}
 
-	// Print the response
-	fmt.Printf("\nQuery Range Response:\n")
-	jsonData, err = json.MarshalIndent(response, "", "  ")
-	if err != nil {
-		return fmt.Errorf("error marshaling response: %v", err)
+		// Store complete response for debugging
+		responseJSON, jsonErr := json.Marshal(response)
+		if jsonErr == nil {
+			metric.APIResponse = string(responseJSON)
+
+			// Extract log bodies
+			metric.LogBodies = extractLogBodies(response)
+		} else {
+			metric.APIResponse = fmt.Sprintf("status: %s, error: %s", response.Status, response.Error)
+		}
 	}
-	fmt.Println(string(jsonData))
 
 	// Store the metric
 	if err := StoreAlertMetric(db, metric); err != nil {
-		return fmt.Errorf("error storing alert metric: %v", err)
+		return fmt.Errorf("error storing alert metric for alert %s: %v", alert.Fingerprint, err)
 	}
 
+	fmt.Printf("Alert %s processed successfully\n", alert.Fingerprint)
 	return nil
 }
 
 // extractCompositeQueryFromURL parses a URL and extracts a QueryRangeRequest
 func extractCompositeQueryFromURL(urlToParse string) (QueryRangeRequest, error) {
-	log.Println("Parsing URL:", urlToParse)
-
 	// Parse the URL to extract the query part
 	parsedURL, err := url.Parse(urlToParse)
 	if err != nil {
@@ -273,39 +319,13 @@ func extractCompositeQueryFromURL(urlToParse string) (QueryRangeRequest, error) 
 	// Get the query parameters
 	queryParams := parsedURL.RawQuery
 
-	// Debug output
-	log.Println("Raw Query Parameters:")
-	log.Println(queryParams)
-
 	// Convert & to standard format (the URL uses \u0026 for &)
 	queryParams = strings.ReplaceAll(queryParams, "\\u0026", "&")
-
-	// Debug output after replacement
-	log.Println("Query Parameters after replacement:")
-	log.Println(queryParams)
 
 	// Parse the URL query into QueryRangeParamsV3
 	queryRangeParams, err := contextlinks.ParseLogURLToQueryParams(queryParams)
 	if err != nil {
 		return QueryRangeRequest{}, fmt.Errorf("error parsing query parameters: %v", err)
-	}
-
-	// Debug the parsed values
-	log.Println("Parsed timeRange values:")
-	log.Printf("  Start: %d, End: %d", queryRangeParams.Start, queryRangeParams.End)
-	log.Printf("  Step: %d", queryRangeParams.Step)
-
-	// Debug filter items
-	log.Println("Parsed Filter Items:")
-	for name, query := range queryRangeParams.CompositeQuery.BuilderQueries {
-		log.Printf("Query: %s", name)
-		if query.Filters != nil {
-			log.Printf("  Operator: %s", query.Filters.Operator)
-			log.Printf("  Items count: %d", len(query.Filters.Items))
-			for i, filter := range query.Filters.Items {
-				log.Printf("    Filter %d: %s %s %v", i+1, filter.Key.Key, filter.Operator, filter.Value)
-			}
-		}
 	}
 
 	// Get start and end times from URL parameters, if available
@@ -342,15 +362,6 @@ func extractCompositeQueryFromURL(urlToParse string) (QueryRangeRequest, error) 
 		CompositeQuery: *queryRangeParams.CompositeQuery,
 	}
 
-	// Print the formatted request for debugging
-	jsonData, err := json.MarshalIndent(request, "", "  ")
-	if err != nil {
-		log.Printf("Error marshaling request to JSON: %v", err)
-	} else {
-		log.Println("Extracted QueryRangeRequest:")
-		fmt.Println(string(jsonData))
-	}
-
 	return request, nil
 }
 
@@ -366,9 +377,6 @@ func executeQueryRange(request QueryRangeRequest, signOzConfig SignOzConfig) (*Q
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling request: %v", err)
 	}
-
-	// Print the request payload
-	log.Printf("Sending API Request to %s:\n%s", signOzConfig.APIURL, string(requestJSON))
 
 	// Create HTTP request
 	req, err := http.NewRequest("POST", signOzConfig.APIURL, bytes.NewBuffer(requestJSON))
@@ -396,9 +404,6 @@ func executeQueryRange(request QueryRangeRequest, signOzConfig SignOzConfig) (*Q
 		return nil, fmt.Errorf("error reading response body: %v", err)
 	}
 
-	// Log response for debugging
-	log.Printf("API Response:\n%s", string(body))
-
 	// Try to parse as JSON to check if it's valid
 	var jsonCheck interface{}
 	if err := json.Unmarshal(body, &jsonCheck); err != nil {
@@ -417,20 +422,154 @@ func executeQueryRange(request QueryRangeRequest, signOzConfig SignOzConfig) (*Q
 // extractKubernetesMetadata extracts Kubernetes-related metadata from labels
 func extractKubernetesMetadata(labels map[string]string) map[string]string {
 	metadata := make(map[string]string)
-	kubernetesPrefixes := []string{
-		"kubernetes_namespace",
-		"kubernetes_pod",
-		"kubernetes_container",
-		"kubernetes_deployment",
-		"kubernetes_statefulset",
-		"kubernetes_daemonset",
-		"kubernetes_job",
-		"kubernetes_cronjob",
+
+	// K8s labels with k8s. prefix (from sample response)
+	k8sPrefixes := []string{
+		"k8s.namespace.name",
+		"k8s.container.name",
+		"k8s.deployment.name",
+		"k8s.statefulset.name",
+		"k8s.pod.name",
+		"k8s.pod.uid",
+		"k8s.node.name",
+		"k8s.cluster.name",
+		"k8s.pod.uid",
+		"k8s.node.uid",
+		"k8s.node.name",
+		"k8s.container.name",
+		"k8s.cluster.name",
+		"host.name",
+		"host.id",
+		"deployment.environment",
+		"container.image.name",
+		"container.image.tag",
+		"cloud.availability_zone",
+		"service.name",
 	}
 
-	for _, prefix := range kubernetesPrefixes {
+	// Extract from k8s prefixed labels
+	for _, prefix := range k8sPrefixes {
 		if value, ok := labels[prefix]; ok {
 			metadata[prefix] = value
+		}
+	}
+
+	// Add service.name if available
+	if serviceName, ok := labels["service.name"]; ok {
+		metadata["service.name"] = serviceName
+	}
+
+	return metadata
+}
+
+// extractLogBodies extracts log body contents from the query response
+func extractLogBodies(response *QueryRangeResponse) []string {
+	logBodies := []string{}
+
+	// Parse the response data
+	var responseData struct {
+		ResultType string `json:"resultType"`
+		Result     []struct {
+			QueryName string `json:"queryName"`
+			List      []struct {
+				Timestamp string `json:"timestamp"`
+				Data      struct {
+					Body             string            `json:"body"`
+					ResourcesString  map[string]string `json:"resources_string"`
+					AttributesString map[string]string `json:"attributes_string"`
+				} `json:"data"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+
+	if err := json.Unmarshal(response.Data, &responseData); err != nil {
+		return logBodies
+	}
+
+	// Extract the log bodies
+	for _, result := range responseData.Result {
+		for _, item := range result.List {
+			if item.Data.Body != "" {
+				logBodies = append(logBodies, item.Data.Body)
+			}
+		}
+	}
+
+	return logBodies
+}
+
+// extractKubernetesMetadataFromResponse extracts Kubernetes-related metadata from the query response
+func extractKubernetesMetadataFromResponse(response *QueryRangeResponse) map[string]string {
+	metadata := make(map[string]string)
+
+	// Parse the response data
+	var responseData struct {
+		ResultType string `json:"resultType"`
+		Result     []struct {
+			QueryName string `json:"queryName"`
+			List      []struct {
+				Timestamp string `json:"timestamp"`
+				Data      struct {
+					ResourcesString  map[string]string `json:"resources_string"`
+					AttributesString map[string]string `json:"attributes_string"`
+				} `json:"data"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+
+	if err := json.Unmarshal(response.Data, &responseData); err != nil {
+		return metadata
+	}
+
+	// Important fields to extract from resources_string
+	importantFields := []string{
+		"service.name",
+		"k8s.namespace.name",
+		"k8s.deployment.name",
+		"k8s.pod.name",
+		"k8s.container.name",
+		"k8s.cluster.name",
+		"k8s.node.name",
+		"k8s.statefulset.name",
+		"host.name",
+		"deployment.environment",
+		"container.image.name",
+		"container.image.tag",
+	}
+
+	// Extract the Kubernetes metadata from the first log entry
+	// We assume all logs in a batch come from the same source
+	for _, result := range responseData.Result {
+		if len(result.List) > 0 {
+			// Extract from resources_string
+			if result.List[0].Data.ResourcesString != nil {
+				// First, extract the important fields directly
+				for _, field := range importantFields {
+					if value, ok := result.List[0].Data.ResourcesString[field]; ok {
+						metadata[field] = value
+					}
+				}
+
+				// Then extract any other k8s related fields
+				for key, value := range result.List[0].Data.ResourcesString {
+					if strings.HasPrefix(key, "k8s.") && metadata[key] == "" {
+						metadata[key] = value
+					}
+				}
+			}
+
+			// Extract from attributes_string
+			if result.List[0].Data.AttributesString != nil {
+				for key, value := range result.List[0].Data.AttributesString {
+					// Add kubernetes related fields if present
+					if strings.HasPrefix(key, "k8s.") || strings.HasPrefix(key, "kubernetes") || key == "service.name" {
+						metadata[key] = value
+					}
+				}
+			}
+
+			// Once we've found the first log entry with data, break
+			break
 		}
 	}
 
