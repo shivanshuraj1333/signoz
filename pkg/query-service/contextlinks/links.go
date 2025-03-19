@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	tracesV3 "go.signoz.io/signoz/pkg/query-service/app/traces/v3"
@@ -125,6 +126,76 @@ func PrepareLinksToLogs(start, end time.Time, filterItems []v3.FilterItem) strin
 	urlEncodedOptions := url.QueryEscape(string(optionsData))
 
 	return fmt.Sprintf("compositeQuery=%s&timeRange=%s&startTime=%d&endTime=%d&options=%s", compositeQuery, urlEncodedTimeRange, tr.Start, tr.End, urlEncodedOptions)
+}
+
+// ParseLogURLToQueryParams converts a logs URL query string into QueryRangeParamsV3
+func ParseLogURLToQueryParams(urlQuery string) (*v3.QueryRangeParamsV3, error) {
+	// Parse the URL query parameters
+	values, err := url.ParseQuery(urlQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract encoded values
+	compositeQueryEncoded := values.Get("compositeQuery")
+	timeRangeEncoded := values.Get("timeRange")
+	// optionsEncoded := values.Get("options") // Not used currently
+
+	// Double URL decode the composite query
+	compositeQueryJSON, err := url.QueryUnescape(compositeQueryEncoded)
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.HasPrefix(compositeQueryJSON, "%") {
+		// Double-encoded, decode again
+		compositeQueryJSON, err = url.QueryUnescape(compositeQueryJSON)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Parse the composite query
+	var urlData v3.URLShareableCompositeQuery
+	if err := json.Unmarshal([]byte(compositeQueryJSON), &urlData); err != nil {
+		return nil, err
+	}
+
+	// Parse the time range
+	timeRangeJSON, err := url.QueryUnescape(timeRangeEncoded)
+	if err != nil {
+		return nil, err
+	}
+
+	var timeRange v3.URLShareableTimeRange
+	if err := json.Unmarshal([]byte(timeRangeJSON), &timeRange); err != nil {
+		return nil, err
+	}
+
+	// Convert URLShareableCompositeQuery to CompositeQuery
+	compositeQuery := &v3.CompositeQuery{
+		QueryType: v3.QueryType(urlData.QueryType),
+		PanelType: v3.PanelTypeList, // Default for logs view
+	}
+
+	// Convert BuilderQueries
+	if urlData.Builder.QueryData != nil && len(urlData.Builder.QueryData) > 0 {
+		compositeQuery.BuilderQueries = make(map[string]*v3.BuilderQuery)
+		for _, query := range urlData.Builder.QueryData {
+			compositeQuery.BuilderQueries[query.QueryName] = &query
+		}
+	}
+
+	// Create the query params
+	queryParams := &v3.QueryRangeParamsV3{
+		// For logs, time is in milliseconds
+		Start:          timeRange.Start / 1000000, // Convert to seconds for QueryRangeParamsV3
+		End:            timeRange.End / 1000000,   // Convert to seconds for QueryRangeParamsV3
+		Step:           60,                        // Default step interval
+		CompositeQuery: compositeQuery,
+	}
+
+	return queryParams, nil
 }
 
 // The following function is used to prepare the where clause for the query
