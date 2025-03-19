@@ -91,6 +91,27 @@ type AlertManagerNotification struct {
 	Alerts            []AlertManagerAlert `json:"alerts"`
 }
 
+// AlertMetric represents the structure of an alert metric
+type AlertMetric struct {
+	Timestamp          time.Time
+	AlertFingerprint   string
+	AlertName          string
+	AlertDescription   string
+	AlertSummary       string
+	AlertSeverity      string
+	KubernetesMetadata map[string]string
+	RuleID             string
+	Severity           string
+	AlertTypes         []string
+	CompositeQuery     *v3.CompositeQuery
+	RequestJSON        string // New field to store the full request JSON
+	APIStatusCode      int
+	APIResponse        string
+	ProcessingTimeMs   int
+	ServiceName        string
+	LogBodies          []string
+}
+
 // handleWebhook handles incoming webhook requests
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -216,6 +237,17 @@ func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 			log.Printf("Error extracting query range request for alert %s: %v", alert.Fingerprint, queryErr)
 			// Continue processing even if extraction fails - we'll store the alert without log data
 		} else {
+			// Print the QueryRangeRequest as JSON
+			requestJSON, jsonErr := json.MarshalIndent(queryRangeRequest, "", "  ")
+			if jsonErr == nil {
+				log.Printf("QueryRangeRequest for alert %s:\n%s", alert.Fingerprint, string(requestJSON))
+			} else {
+				log.Printf("Error marshaling QueryRangeRequest to JSON: %v", jsonErr)
+			}
+
+			// Set step from config
+			queryRangeRequest.Step = s.config.Query.Step
+
 			// Use the alert's start and end times if available
 			if alert.StartsAt != "" {
 				if parsedStartTime, err := time.Parse(time.RFC3339, alert.StartsAt); err == nil {
@@ -270,6 +302,7 @@ func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 		Severity:           alert.Labels["severity"],
 		AlertTypes:         GetAlertType(alert.Annotations),
 		CompositeQuery:     nil,
+		RequestJSON:        "",
 		APIStatusCode:      0,
 		APIResponse:        "",
 		ProcessingTimeMs:   processingTime,
@@ -281,22 +314,22 @@ func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 	if hasLogData {
 		metric.CompositeQuery = &queryRangeRequest.CompositeQuery
 
+		// Store the full query range request in the API response for debugging
+		requestJSON, _ := json.MarshalIndent(queryRangeRequest, "", "  ")
+		responseJSON, _ := json.Marshal(response)
+
+		// Combine both request and response JSON in the APIResponse field
+		metric.APIResponse = fmt.Sprintf("REQUEST:\n%s\n\nRESPONSE:\n%s",
+			string(requestJSON), string(responseJSON))
+
 		// Set status code for successful API call
 		metric.APIStatusCode = http.StatusOK
 
-		// Store complete response for debugging
-		responseJSON, jsonErr := json.Marshal(response)
-		if jsonErr == nil {
-			metric.APIResponse = string(responseJSON)
-
-			// Extract log bodies
-			metric.LogBodies = extractLogBodies(response)
-		} else {
-			metric.APIResponse = fmt.Sprintf("status: %s, error: %s", response.Status, response.Error)
-		}
+		// Extract log bodies
+		metric.LogBodies = extractLogBodies(response)
 	} else if logsURL != "" && queryErr != nil {
 		// Store error information if query was attempted but failed
-		metric.APIResponse = fmt.Sprintf("error: %v", queryErr)
+		metric.APIResponse = fmt.Sprintf("Query error: %v", queryErr)
 		metric.APIStatusCode = http.StatusInternalServerError
 		log.Printf("Error executing query range for alert %s: %v", alert.Fingerprint, queryErr)
 	}
@@ -414,6 +447,14 @@ func debugProcessAlert(alert Alert, config *Config) error {
 			fmt.Printf("Error extracting query range request for alert %s: %v\n", alert.Fingerprint, err)
 			// Continue processing even if extraction fails - we'll store the alert without log data
 		} else {
+			// Print the QueryRangeRequest as JSON
+			requestJSON, jsonErr := json.MarshalIndent(queryRangeRequest, "", "  ")
+			if jsonErr == nil {
+				fmt.Printf("QueryRangeRequest for alert %s:\n%s\n", alert.Fingerprint, string(requestJSON))
+			} else {
+				fmt.Printf("Error marshaling QueryRangeRequest to JSON: %v\n", jsonErr)
+			}
+
 			// Set step from config
 			queryRangeRequest.Step = config.Query.Step
 
@@ -478,6 +519,7 @@ func debugProcessAlert(alert Alert, config *Config) error {
 		Severity:           alert.Labels["severity"],
 		AlertTypes:         GetAlertType(alert.Annotations),
 		CompositeQuery:     nil,
+		RequestJSON:        "",
 		APIStatusCode:      0,
 		APIResponse:        "",
 		ProcessingTimeMs:   processingTime,
@@ -489,22 +531,22 @@ func debugProcessAlert(alert Alert, config *Config) error {
 	if hasLogData {
 		metric.CompositeQuery = &queryRangeRequest.CompositeQuery
 
+		// Store the full query range request in the API response for debugging
+		requestJSON, _ := json.MarshalIndent(queryRangeRequest, "", "  ")
+		responseJSON, _ := json.Marshal(response)
+
+		// Combine both request and response JSON in the APIResponse field
+		metric.APIResponse = fmt.Sprintf("REQUEST:\n%s\n\nRESPONSE:\n%s",
+			string(requestJSON), string(responseJSON))
+
 		// Set status code for successful API call
 		metric.APIStatusCode = http.StatusOK
 
-		// Store complete response for debugging
-		responseJSON, jsonErr := json.Marshal(response)
-		if jsonErr == nil {
-			metric.APIResponse = string(responseJSON)
-
-			// Extract log bodies
-			metric.LogBodies = extractLogBodies(response)
-		} else {
-			metric.APIResponse = fmt.Sprintf("status: %s, error: %s", response.Status, response.Error)
-		}
+		// Extract log bodies
+		metric.LogBodies = extractLogBodies(response)
 	} else if logsURL != "" && err != nil {
 		// Store error information if query was attempted but failed
-		metric.APIResponse = fmt.Sprintf("error: %v", err)
+		metric.APIResponse = fmt.Sprintf("Query error: %v", err)
 		metric.APIStatusCode = http.StatusInternalServerError
 		fmt.Printf("Error executing query range for alert %s: %v\n", alert.Fingerprint, err)
 	}
@@ -582,13 +624,16 @@ func parseStringToInt64(s string) (int64, error) {
 
 // executeQueryRange executes a query range request
 func executeQueryRange(request QueryRangeRequest, signOzConfig SignOzConfig) (*QueryRangeResponse, error) {
-	// Convert request to JSON
-	requestJSON, err := json.Marshal(request)
+	// Convert request to JSON with pretty indentation for debugging
+	requestJSON, err := json.MarshalIndent(request, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling request: %v", err)
 	}
 
-	// Create HTTP request
+	// Log the complete request for debugging
+	log.Printf("Executing query with request:\n%s", string(requestJSON))
+
+	// Create HTTP request (using the same JSON for the request body)
 	req, err := http.NewRequest("POST", signOzConfig.APIURL, bytes.NewBuffer(requestJSON))
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %v", err)
@@ -624,6 +669,12 @@ func executeQueryRange(request QueryRangeRequest, signOzConfig SignOzConfig) (*Q
 	var response QueryRangeResponse
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("error unmarshaling response: %v, body: %s", err, string(body))
+	}
+
+	// Pretty-print the response for debugging
+	rspJSON, err := json.MarshalIndent(response, "", "  ")
+	if err == nil {
+		log.Printf("Response:\n%s", string(rspJSON))
 	}
 
 	return &response, nil
