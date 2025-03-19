@@ -91,27 +91,6 @@ type AlertManagerNotification struct {
 	Alerts            []AlertManagerAlert `json:"alerts"`
 }
 
-// AlertMetric represents the structure of an alert metric
-type AlertMetric struct {
-	Timestamp          time.Time
-	AlertFingerprint   string
-	AlertName          string
-	AlertDescription   string
-	AlertSummary       string
-	AlertSeverity      string
-	KubernetesMetadata map[string]string
-	RuleID             string
-	Severity           string
-	AlertTypes         []string
-	CompositeQuery     *v3.CompositeQuery
-	RequestJSON        string // New field to store the full request JSON
-	APIStatusCode      int
-	APIResponse        string
-	ProcessingTimeMs   int
-	ServiceName        string
-	LogBodies          []string
-}
-
 // handleWebhook handles incoming webhook requests
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -314,13 +293,13 @@ func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 	if hasLogData {
 		metric.CompositeQuery = &queryRangeRequest.CompositeQuery
 
-		// Store the full query range request in the API response for debugging
+		// Store the full query range request in RequestJSON field
 		requestJSON, _ := json.MarshalIndent(queryRangeRequest, "", "  ")
-		responseJSON, _ := json.Marshal(response)
+		metric.RequestJSON = string(requestJSON)
 
-		// Combine both request and response JSON in the APIResponse field
-		metric.APIResponse = fmt.Sprintf("REQUEST:\n%s\n\nRESPONSE:\n%s",
-			string(requestJSON), string(responseJSON))
+		// Store the response in APIResponse field
+		responseJSON, _ := json.Marshal(response)
+		metric.APIResponse = string(responseJSON)
 
 		// Set status code for successful API call
 		metric.APIStatusCode = http.StatusOK
@@ -458,19 +437,6 @@ func debugProcessAlert(alert Alert, config *Config) error {
 			// Set step from config
 			queryRangeRequest.Step = config.Query.Step
 
-			// Use the alert's start and end times if available
-			if alert.StartsAt != "" {
-				if parsedStartTime, err := time.Parse(time.RFC3339, alert.StartsAt); err == nil {
-					queryRangeRequest.Start = parsedStartTime.UnixMilli()
-				}
-			}
-
-			if alert.EndsAt != "" && alert.EndsAt != "0001-01-01T00:00:00Z" {
-				if parsedEndTime, err := time.Parse(time.RFC3339, alert.EndsAt); err == nil {
-					queryRangeRequest.End = parsedEndTime.UnixMilli()
-				}
-			}
-
 			// Execute query range request
 			startTime := time.Now()
 			response, err = executeQueryRange(queryRangeRequest, config.SignOz)
@@ -531,13 +497,13 @@ func debugProcessAlert(alert Alert, config *Config) error {
 	if hasLogData {
 		metric.CompositeQuery = &queryRangeRequest.CompositeQuery
 
-		// Store the full query range request in the API response for debugging
+		// Store the full query range request in RequestJSON field
 		requestJSON, _ := json.MarshalIndent(queryRangeRequest, "", "  ")
-		responseJSON, _ := json.Marshal(response)
+		metric.RequestJSON = string(requestJSON)
 
-		// Combine both request and response JSON in the APIResponse field
-		metric.APIResponse = fmt.Sprintf("REQUEST:\n%s\n\nRESPONSE:\n%s",
-			string(requestJSON), string(responseJSON))
+		// Store the response in APIResponse field
+		responseJSON, _ := json.Marshal(response)
+		metric.APIResponse = string(responseJSON)
 
 		// Set status code for successful API call
 		metric.APIStatusCode = http.StatusOK

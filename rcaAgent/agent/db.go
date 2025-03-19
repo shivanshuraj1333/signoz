@@ -34,6 +34,7 @@ type AlertMetric struct {
 	Severity           string
 	AlertTypes         []AlertType
 	CompositeQuery     *v3.CompositeQuery
+	RequestJSON        string
 	APIStatusCode      int
 	APIResponse        string
 	ProcessingTimeMs   int
@@ -151,6 +152,28 @@ func createTables(db *sql.DB) error {
 		}
 	}
 
+	// Check if request_json column exists
+	var requestJSONExists bool
+	err = db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1 
+			FROM information_schema.columns 
+			WHERE table_name = 'alert_metrics' AND column_name = 'request_json'
+		)
+	`).Scan(&requestJSONExists)
+
+	if err != nil {
+		return fmt.Errorf("error checking if request_json column exists: %v", err)
+	}
+
+	// Add request_json column if it doesn't exist
+	if !requestJSONExists {
+		_, err = db.Exec(`ALTER TABLE alert_metrics ADD COLUMN request_json TEXT`)
+		if err != nil {
+			return fmt.Errorf("error adding request_json column: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -161,8 +184,9 @@ func StoreAlertMetric(db *sql.DB, metric *AlertMetric) error {
 			timestamp, alert_fingerprint, alert_name, alert_description,
 			alert_summary, alert_severity, kubernetes_metadata, rule_id,
 			severity, alert_types, composite_query, api_status_code,
-			api_response, processing_time_ms, service_name, log_bodies
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			api_response, processing_time_ms, service_name, log_bodies,
+			request_json
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 	`
 
 	// Convert alert types to string array
@@ -200,6 +224,7 @@ func StoreAlertMetric(db *sql.DB, metric *AlertMetric) error {
 		metric.ProcessingTimeMs,
 		metric.ServiceName,
 		pq.Array(metric.LogBodies),
+		metric.RequestJSON,
 	)
 
 	return err
