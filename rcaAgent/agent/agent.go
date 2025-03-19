@@ -67,6 +67,30 @@ func (s *Server) Start() error {
 	return http.ListenAndServe(s.port, nil)
 }
 
+// AlertManagerAlert represents the structure of an alert from AlertManager
+type AlertManagerAlert struct {
+	Status       string            `json:"status"`
+	Labels       map[string]string `json:"labels"`
+	Annotations  map[string]string `json:"annotations"`
+	StartsAt     string            `json:"startsAt"`
+	EndsAt       string            `json:"endsAt"`
+	GeneratorURL string            `json:"generatorURL"`
+	Fingerprint  string            `json:"fingerprint"`
+}
+
+// AlertManagerNotification represents the structure of a notification from AlertManager
+type AlertManagerNotification struct {
+	Version           string              `json:"version"`
+	GroupKey          string              `json:"groupKey"`
+	Status            string              `json:"status"`
+	Receiver          string              `json:"receiver"`
+	GroupLabels       map[string]string   `json:"groupLabels"`
+	CommonLabels      map[string]string   `json:"commonLabels"`
+	CommonAnnotations map[string]string   `json:"commonAnnotations"`
+	ExternalURL       string              `json:"externalURL"`
+	Alerts            []AlertManagerAlert `json:"alerts"`
+}
+
 // handleWebhook handles incoming webhook requests
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -83,7 +107,61 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	// Parse alert JSON
+	// Print the raw request body for debugging
+	log.Printf("Received raw alert body: %s", string(body))
+
+	// First try to parse as a AlertManagerNotification
+	var alertManagerNotification AlertManagerNotification
+	if err := json.Unmarshal(body, &alertManagerNotification); err == nil && len(alertManagerNotification.Alerts) > 0 {
+		log.Printf("Detected AlertManager notification format with %d alerts", len(alertManagerNotification.Alerts))
+
+		// Process each alert in the notification
+		for i, amAlert := range alertManagerNotification.Alerts {
+			// Convert AlertManagerAlert to our Alert format
+			alert := Alert{
+				Labels:       amAlert.Labels,
+				Annotations:  amAlert.Annotations,
+				Status:       amAlert.Status,
+				StartsAt:     amAlert.StartsAt,
+				EndsAt:       amAlert.EndsAt,
+				GeneratorURL: amAlert.GeneratorURL,
+				Fingerprint:  amAlert.Fingerprint,
+			}
+
+			// If common labels/annotations exist, merge them
+			if alertManagerNotification.CommonLabels != nil {
+				if alert.Labels == nil {
+					alert.Labels = make(map[string]string)
+				}
+				for k, v := range alertManagerNotification.CommonLabels {
+					if _, exists := alert.Labels[k]; !exists {
+						alert.Labels[k] = v
+					}
+				}
+			}
+
+			if alertManagerNotification.CommonAnnotations != nil {
+				if alert.Annotations == nil {
+					alert.Annotations = make(map[string]string)
+				}
+				for k, v := range alertManagerNotification.CommonAnnotations {
+					if _, exists := alert.Annotations[k]; !exists {
+						alert.Annotations[k] = v
+					}
+				}
+			}
+
+			log.Printf("Processing alert %d of %d from notification", i+1, len(alertManagerNotification.Alerts))
+			processAlert(s, w, alert)
+		}
+
+		// Return success after processing all alerts
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("AlertManager notification processed successfully"))
+		return
+	}
+
+	// If not AlertManager notification format, try our regular Alert format
 	var alert Alert
 	if err := json.Unmarshal(body, &alert); err != nil {
 		log.Printf("Error unmarshaling alert JSON: %v", err)
@@ -91,9 +169,15 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log complete alert
+	// Process the single alert
+	processAlert(s, w, alert)
+}
+
+// processAlert handles the processing of a single alert
+func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
+	// Log complete alert after unmarshaling
 	alertJSON, _ := json.MarshalIndent(alert, "", "  ")
-	log.Printf("Processing alert: %s\n%s", alert.Fingerprint, string(alertJSON))
+	log.Printf("Processing alert after unmarshaling: %s\n%s", alert.Fingerprint, string(alertJSON))
 
 	// Extract Kubernetes metadata from labels and populate properly
 	kubernetesMetadata := extractKubernetesMetadata(alert.Labels)
@@ -115,15 +199,21 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	var response *QueryRangeResponse
 	var processingTime int
 	var responseK8sMetadata map[string]string
-	var logsURL string = alert.Annotations["related.logs"]
+	var logsURL string = ""
 	var hasLogData bool = false
+	var queryErr error
+
+	// Get logs URL from annotations if they exist
+	if alert.Annotations != nil {
+		logsURL = alert.Annotations["related.logs"]
+	}
 
 	// Only extract and execute query if there's a logs URL
 	if logsURL != "" {
 		// Extract query range request from logs URL
-		queryRangeRequest, err = extractCompositeQueryFromURL(logsURL)
-		if err != nil {
-			log.Printf("Error extracting query range request for alert %s: %v", alert.Fingerprint, err)
+		queryRangeRequest, queryErr = extractCompositeQueryFromURL(logsURL)
+		if queryErr != nil {
+			log.Printf("Error extracting query range request for alert %s: %v", alert.Fingerprint, queryErr)
 			// Continue processing even if extraction fails - we'll store the alert without log data
 		} else {
 			// Use the alert's start and end times if available
@@ -141,10 +231,10 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 			// Execute query range request
 			startTime := time.Now()
-			response, err = executeQueryRange(queryRangeRequest, s.config.SignOz)
+			response, queryErr = executeQueryRange(queryRangeRequest, s.config.SignOz)
 			processingTime = int(time.Since(startTime).Milliseconds())
 
-			if err == nil && response != nil {
+			if queryErr == nil && response != nil {
 				hasLogData = true
 
 				// Extract additional Kubernetes metadata from response
@@ -204,11 +294,11 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		} else {
 			metric.APIResponse = fmt.Sprintf("status: %s, error: %s", response.Status, response.Error)
 		}
-	} else if logsURL != "" && err != nil {
+	} else if logsURL != "" && queryErr != nil {
 		// Store error information if query was attempted but failed
-		metric.APIResponse = fmt.Sprintf("error: %v", err)
+		metric.APIResponse = fmt.Sprintf("error: %v", queryErr)
 		metric.APIStatusCode = http.StatusInternalServerError
-		log.Printf("Error executing query range for alert %s: %v", alert.Fingerprint, err)
+		log.Printf("Error executing query range for alert %s: %v", alert.Fingerprint, queryErr)
 	}
 
 	// Store the metric
@@ -219,22 +309,73 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Alert %s processed successfully", alert.Fingerprint)
-
-	// Return success response
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Alert processed successfully"))
 }
 
 // DebugParseAlert parses alert JSON and prints the extracted composite query
 func DebugParseAlert(alertJSON []byte, config *Config) error {
+	// Print the raw alert JSON for debugging
+	fmt.Printf("Received raw alert body: %s\n", string(alertJSON))
+
+	// First try to parse as a AlertManagerNotification
+	var alertManagerNotification AlertManagerNotification
+	if err := json.Unmarshal(alertJSON, &alertManagerNotification); err == nil && len(alertManagerNotification.Alerts) > 0 {
+		fmt.Printf("Detected AlertManager notification format with %d alerts\n", len(alertManagerNotification.Alerts))
+
+		// For debug mode, we only process the first alert
+		if len(alertManagerNotification.Alerts) > 0 {
+			amAlert := alertManagerNotification.Alerts[0]
+			// Convert AlertManagerAlert to our Alert format
+			alert := Alert{
+				Labels:       amAlert.Labels,
+				Annotations:  amAlert.Annotations,
+				Status:       amAlert.Status,
+				StartsAt:     amAlert.StartsAt,
+				EndsAt:       amAlert.EndsAt,
+				GeneratorURL: amAlert.GeneratorURL,
+				Fingerprint:  amAlert.Fingerprint,
+			}
+
+			// If common labels/annotations exist, merge them
+			if alertManagerNotification.CommonLabels != nil {
+				if alert.Labels == nil {
+					alert.Labels = make(map[string]string)
+				}
+				for k, v := range alertManagerNotification.CommonLabels {
+					if _, exists := alert.Labels[k]; !exists {
+						alert.Labels[k] = v
+					}
+				}
+			}
+
+			if alertManagerNotification.CommonAnnotations != nil {
+				if alert.Annotations == nil {
+					alert.Annotations = make(map[string]string)
+				}
+				for k, v := range alertManagerNotification.CommonAnnotations {
+					if _, exists := alert.Annotations[k]; !exists {
+						alert.Annotations[k] = v
+					}
+				}
+			}
+
+			return debugProcessAlert(alert, config)
+		}
+	}
+
+	// If not AlertManager notification format, try our regular Alert format
 	var alert Alert
 	if err := json.Unmarshal(alertJSON, &alert); err != nil {
 		return fmt.Errorf("error unmarshaling alert JSON: %v", err)
 	}
 
-	// Print complete alert
+	return debugProcessAlert(alert, config)
+}
+
+// debugProcessAlert processes a single alert in debug mode
+func debugProcessAlert(alert Alert, config *Config) error {
+	// Print complete alert after unmarshaling
 	formattedAlert, _ := json.MarshalIndent(alert, "", "  ")
-	fmt.Printf("Processing alert: %s\n%s\n", alert.Fingerprint, string(formattedAlert))
+	fmt.Printf("Processing alert after unmarshaling: %s\n%s\n", alert.Fingerprint, string(formattedAlert))
 
 	// Extract Kubernetes metadata from labels
 	kubernetesMetadata := extractKubernetesMetadata(alert.Labels)
@@ -257,8 +398,13 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 	var processingTime int
 	var err error
 	var responseK8sMetadata map[string]string
-	var logsURL string = alert.Annotations["related.logs"]
+	var logsURL string = ""
 	var hasLogData bool = false
+
+	// Get logs URL from annotations if they exist
+	if alert.Annotations != nil {
+		logsURL = alert.Annotations["related.logs"]
+	}
 
 	// Only extract and execute query if there's a logs URL
 	if logsURL != "" {
