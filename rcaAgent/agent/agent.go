@@ -108,7 +108,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	// Print the raw request body for debugging
-	log.Printf("Received raw alert body: %s", string(body))
+	//log.Printf("Received raw alert body: %s", string(body))
 
 	// First try to parse as a AlertManagerNotification
 	var alertManagerNotification AlertManagerNotification
@@ -177,7 +177,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 	// Log complete alert after unmarshaling
 	alertJSON, _ := json.MarshalIndent(alert, "", "  ")
+	log.Print("--------------------------------------------------------------------------------------")
 	log.Printf("Processing alert after unmarshaling: %s\n%s", alert.Fingerprint, string(alertJSON))
+	log.Print("------------------------------------------#-------------------------------------------")
 
 	// Extract Kubernetes metadata from labels and populate properly
 	kubernetesMetadata := extractKubernetesMetadata(alert.Labels)
@@ -217,28 +219,15 @@ func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 			// Continue processing even if extraction fails - we'll store the alert without log data
 		} else {
 			// Print the QueryRangeRequest as JSON
-			requestJSON, jsonErr := json.MarshalIndent(queryRangeRequest, "", "  ")
-			if jsonErr == nil {
-				log.Printf("QueryRangeRequest for alert %s:\n%s", alert.Fingerprint, string(requestJSON))
-			} else {
-				log.Printf("Error marshaling QueryRangeRequest to JSON: %v", jsonErr)
-			}
+			//requestJSON, jsonErr := json.MarshalIndent(queryRangeRequest, "", "  ")
+			//if jsonErr == nil {
+			//log.Printf("QueryRangeRequest for alert %s:\n%s", alert.Fingerprint, string(requestJSON))
+			//} else {
+			//	log.Printf("Error marshaling QueryRangeRequest to JSON: %v", jsonErr)
+			//}
 
 			// Set step from config
 			queryRangeRequest.Step = s.config.Query.Step
-
-			// Use the alert's start and end times if available
-			if alert.StartsAt != "" {
-				if parsedStartTime, err := time.Parse(time.RFC3339, alert.StartsAt); err == nil {
-					queryRangeRequest.Start = parsedStartTime.UnixMilli()
-				}
-			}
-
-			if alert.EndsAt != "" && alert.EndsAt != "0001-01-01T00:00:00Z" {
-				if parsedEndTime, err := time.Parse(time.RFC3339, alert.EndsAt); err == nil {
-					queryRangeRequest.End = parsedEndTime.UnixMilli()
-				}
-			}
 
 			// Execute query range request
 			startTime := time.Now()
@@ -326,7 +315,7 @@ func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 // DebugParseAlert parses alert JSON and prints the extracted composite query
 func DebugParseAlert(alertJSON []byte, config *Config) error {
 	// Print the raw alert JSON for debugging
-	fmt.Printf("Received raw alert body: %s\n", string(alertJSON))
+	//fmt.Printf("Received raw alert body: %s\n", string(alertJSON))
 
 	// First try to parse as a AlertManagerNotification
 	var alertManagerNotification AlertManagerNotification
@@ -427,12 +416,12 @@ func debugProcessAlert(alert Alert, config *Config) error {
 			// Continue processing even if extraction fails - we'll store the alert without log data
 		} else {
 			// Print the QueryRangeRequest as JSON
-			requestJSON, jsonErr := json.MarshalIndent(queryRangeRequest, "", "  ")
-			if jsonErr == nil {
-				fmt.Printf("QueryRangeRequest for alert %s:\n%s\n", alert.Fingerprint, string(requestJSON))
-			} else {
-				fmt.Printf("Error marshaling QueryRangeRequest to JSON: %v\n", jsonErr)
-			}
+			//requestJSON, jsonErr := json.MarshalIndent(queryRangeRequest, "", "  ")
+			//if jsonErr == nil {
+			//fmt.Printf("QueryRangeRequest for alert %s:\n%s\n", alert.Fingerprint, string(requestJSON))
+			//} else {
+			//	fmt.Printf("Error marshaling QueryRangeRequest to JSON: %v\n", jsonErr)
+			//}
 
 			// Set step from config
 			queryRangeRequest.Step = config.Query.Step
@@ -591,13 +580,14 @@ func parseStringToInt64(s string) (int64, error) {
 // executeQueryRange executes a query range request
 func executeQueryRange(request QueryRangeRequest, signOzConfig SignOzConfig) (*QueryRangeResponse, error) {
 	// Convert request to JSON with pretty indentation for debugging
+
 	requestJSON, err := json.MarshalIndent(request, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling request: %v", err)
 	}
 
 	// Log the complete request for debugging
-	log.Printf("Executing query with request:\n%s", string(requestJSON))
+	//log.Printf("Executing query with request:\n%s", string(requestJSON))
 
 	// Create HTTP request (using the same JSON for the request body)
 	req, err := http.NewRequest("POST", signOzConfig.APIURL, bytes.NewBuffer(requestJSON))
@@ -638,10 +628,10 @@ func executeQueryRange(request QueryRangeRequest, signOzConfig SignOzConfig) (*Q
 	}
 
 	// Pretty-print the response for debugging
-	rspJSON, err := json.MarshalIndent(response, "", "  ")
-	if err == nil {
-		log.Printf("Response:\n%s", string(rspJSON))
-	}
+	//rspJSON, err := json.MarshalIndent(response, "", "  ")
+	//if err == nil {
+	//	log.Printf("Response:\n%s", string(rspJSON))
+	//}
 
 	return &response, nil
 }
