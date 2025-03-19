@@ -91,21 +91,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log alert ID
-	log.Printf("Processing alert: %s", alert.Fingerprint)
-
-	// Extract query range request from logs URL
-	queryRangeRequest, err := extractCompositeQueryFromURL(alert.Annotations["related.logs"])
-	if err != nil {
-		log.Printf("Error extracting query range request for alert %s: %v", alert.Fingerprint, err)
-		http.Error(w, "Error extracting query range request", http.StatusBadRequest)
-		return
-	}
-
-	// Execute query range request
-	startTime := time.Now()
-	response, err := executeQueryRange(queryRangeRequest, s.config.SignOz)
-	processingTime := int(time.Since(startTime).Milliseconds())
+	// Log complete alert
+	alertJSON, _ := json.MarshalIndent(alert, "", "  ")
+	log.Printf("Processing alert: %s\n%s", alert.Fingerprint, string(alertJSON))
 
 	// Extract Kubernetes metadata from labels and populate properly
 	kubernetesMetadata := extractKubernetesMetadata(alert.Labels)
@@ -122,22 +110,48 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		serviceName = val
 	}
 
-	// Extract additional Kubernetes metadata from response
+	// Initialize variables
+	var queryRangeRequest QueryRangeRequest
+	var response *QueryRangeResponse
+	var processingTime int
 	var responseK8sMetadata map[string]string
-	if err == nil && response != nil {
-		responseK8sMetadata = extractKubernetesMetadataFromResponse(response)
+	var logsURL string = alert.Annotations["related.logs"]
+	var hasLogData bool = false
 
-		// Check if we can get a service name from the response
-		if serviceName == "" {
-			if val, ok := responseK8sMetadata["service.name"]; ok && val != "" {
-				serviceName = val
+	// Only extract and execute query if there's a logs URL
+	if logsURL != "" {
+		// Extract query range request from logs URL
+		queryRangeRequest, err = extractCompositeQueryFromURL(logsURL)
+		if err != nil {
+			log.Printf("Error extracting query range request for alert %s: %v", alert.Fingerprint, err)
+			// Continue processing even if extraction fails - we'll store the alert without log data
+		} else {
+			// Execute query range request
+			startTime := time.Now()
+			response, err = executeQueryRange(queryRangeRequest, s.config.SignOz)
+			processingTime = int(time.Since(startTime).Milliseconds())
+
+			if err == nil && response != nil {
+				hasLogData = true
+
+				// Extract additional Kubernetes metadata from response
+				responseK8sMetadata = extractKubernetesMetadataFromResponse(response)
+
+				// Check if we can get a service name from the response
+				if serviceName == "" {
+					if val, ok := responseK8sMetadata["service.name"]; ok && val != "" {
+						serviceName = val
+					}
+				}
+
+				// Merge with the existing metadata, preferring response values if duplicates
+				for key, value := range responseK8sMetadata {
+					kubernetesMetadata[key] = value
+				}
 			}
 		}
-
-		// Merge with the existing metadata, preferring response values if duplicates
-		for key, value := range responseK8sMetadata {
-			kubernetesMetadata[key] = value
-		}
+	} else {
+		log.Printf("Alert %s does not contain related.logs URL, skipping query", alert.Fingerprint)
 	}
 
 	// Create alert metric
@@ -152,21 +166,18 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		RuleID:             ruleID,
 		Severity:           alert.Labels["severity"],
 		AlertTypes:         GetAlertType(alert.Annotations),
-		CompositeQuery:     &queryRangeRequest.CompositeQuery,
+		CompositeQuery:     nil,
 		APIStatusCode:      0,
-		APIResponse:        "error",
+		APIResponse:        "",
 		ProcessingTimeMs:   processingTime,
 		ServiceName:        serviceName,
 		LogBodies:          []string{},
 	}
 
-	// Update API response details
-	if err != nil {
-		log.Printf("Error executing query range for alert %s: %v", alert.Fingerprint, err)
-		metric.APIResponse = fmt.Sprintf("error: %v", err)
-		metric.APIStatusCode = http.StatusInternalServerError
-		http.Error(w, "Error executing query range", http.StatusInternalServerError)
-	} else {
+	// Update with query data if available
+	if hasLogData {
+		metric.CompositeQuery = &queryRangeRequest.CompositeQuery
+
 		// Set status code for successful API call
 		metric.APIStatusCode = http.StatusOK
 
@@ -180,6 +191,11 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		} else {
 			metric.APIResponse = fmt.Sprintf("status: %s, error: %s", response.Status, response.Error)
 		}
+	} else if logsURL != "" && err != nil {
+		// Store error information if query was attempted but failed
+		metric.APIResponse = fmt.Sprintf("error: %v", err)
+		metric.APIStatusCode = http.StatusInternalServerError
+		log.Printf("Error executing query range for alert %s: %v", alert.Fingerprint, err)
 	}
 
 	// Store the metric
@@ -203,27 +219,9 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 		return fmt.Errorf("error unmarshaling alert JSON: %v", err)
 	}
 
-	fmt.Printf("Processing alert: %s\n", alert.Fingerprint)
-
-	// Extract query range request from logs URL
-	queryRangeRequest, err := extractCompositeQueryFromURL(alert.Annotations["related.logs"])
-	if err != nil {
-		return fmt.Errorf("error extracting query range request for alert %s: %v", alert.Fingerprint, err)
-	}
-
-	queryRangeRequest.Step = config.Query.Step
-
-	// Execute query range request
-	startTime := time.Now()
-	response, err := executeQueryRange(queryRangeRequest, config.SignOz)
-	processingTime := int(time.Since(startTime).Milliseconds())
-
-	// Store alert metric in database with API response details
-	db, err := InitDB(&config.Database)
-	if err != nil {
-		return fmt.Errorf("error initializing database: %v", err)
-	}
-	defer db.Close()
+	// Print complete alert
+	formattedAlert, _ := json.MarshalIndent(alert, "", "  ")
+	fmt.Printf("Processing alert: %s\n%s\n", alert.Fingerprint, string(formattedAlert))
 
 	// Extract Kubernetes metadata from labels
 	kubernetesMetadata := extractKubernetesMetadata(alert.Labels)
@@ -240,23 +238,60 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 		serviceName = val
 	}
 
-	// Extract additional Kubernetes metadata from response
+	// Initialize variables
+	var queryRangeRequest QueryRangeRequest
+	var response *QueryRangeResponse
+	var processingTime int
+	var err error
 	var responseK8sMetadata map[string]string
-	if err == nil && response != nil {
-		responseK8sMetadata = extractKubernetesMetadataFromResponse(response)
+	var logsURL string = alert.Annotations["related.logs"]
+	var hasLogData bool = false
 
-		// Check if we can get a service name from the response
-		if serviceName == "" {
-			if val, ok := responseK8sMetadata["service.name"]; ok && val != "" {
-				serviceName = val
+	// Only extract and execute query if there's a logs URL
+	if logsURL != "" {
+		// Extract query range request from logs URL
+		queryRangeRequest, err = extractCompositeQueryFromURL(logsURL)
+		if err != nil {
+			fmt.Printf("Error extracting query range request for alert %s: %v\n", alert.Fingerprint, err)
+			// Continue processing even if extraction fails - we'll store the alert without log data
+		} else {
+			// Set step from config
+			queryRangeRequest.Step = config.Query.Step
+
+			// Execute query range request
+			startTime := time.Now()
+			response, err = executeQueryRange(queryRangeRequest, config.SignOz)
+			processingTime = int(time.Since(startTime).Milliseconds())
+
+			if err == nil && response != nil {
+				hasLogData = true
+
+				// Extract additional Kubernetes metadata from response
+				responseK8sMetadata = extractKubernetesMetadataFromResponse(response)
+
+				// Check if we can get a service name from the response
+				if serviceName == "" {
+					if val, ok := responseK8sMetadata["service.name"]; ok && val != "" {
+						serviceName = val
+					}
+				}
+
+				// Merge with the existing metadata, preferring response values if duplicates
+				for key, value := range responseK8sMetadata {
+					kubernetesMetadata[key] = value
+				}
 			}
 		}
-
-		// Merge with the existing metadata, preferring response values if duplicates
-		for key, value := range responseK8sMetadata {
-			kubernetesMetadata[key] = value
-		}
+	} else {
+		fmt.Printf("Alert %s does not contain related.logs URL, skipping query\n", alert.Fingerprint)
 	}
+
+	// Store alert metric in database with API response details
+	db, err := InitDB(&config.Database)
+	if err != nil {
+		return fmt.Errorf("error initializing database: %v", err)
+	}
+	defer db.Close()
 
 	// Create alert metric with API response details
 	metric := &AlertMetric{
@@ -270,21 +305,19 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 		RuleID:             ruleID,
 		Severity:           alert.Labels["severity"],
 		AlertTypes:         GetAlertType(alert.Annotations),
-		CompositeQuery:     &queryRangeRequest.CompositeQuery,
+		CompositeQuery:     nil,
 		APIStatusCode:      0,
-		APIResponse:        "error",
+		APIResponse:        "",
 		ProcessingTimeMs:   processingTime,
 		ServiceName:        serviceName,
 		LogBodies:          []string{},
 	}
 
-	// Update API response details
-	if err != nil {
-		fmt.Printf("Error executing query range for alert %s: %v\n", alert.Fingerprint, err)
-		metric.APIResponse = fmt.Sprintf("error: %v", err)
-		metric.APIStatusCode = http.StatusInternalServerError
-		return fmt.Errorf("error executing query range: %v", err)
-	} else {
+	// Update with query data if available
+	if hasLogData {
+		metric.CompositeQuery = &queryRangeRequest.CompositeQuery
+
+		// Set status code for successful API call
 		metric.APIStatusCode = http.StatusOK
 
 		// Store complete response for debugging
@@ -297,6 +330,11 @@ func DebugParseAlert(alertJSON []byte, config *Config) error {
 		} else {
 			metric.APIResponse = fmt.Sprintf("status: %s, error: %s", response.Status, response.Error)
 		}
+	} else if logsURL != "" && err != nil {
+		// Store error information if query was attempted but failed
+		metric.APIResponse = fmt.Sprintf("error: %v", err)
+		metric.APIStatusCode = http.StatusInternalServerError
+		fmt.Printf("Error executing query range for alert %s: %v\n", alert.Fingerprint, err)
 	}
 
 	// Store the metric
