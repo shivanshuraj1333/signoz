@@ -227,7 +227,7 @@ func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 
 	// Get logs URL from annotations if they exist
 	if alert.Annotations != nil {
-		logsURL = alert.Annotations["related.logs"]
+		logsURL = alert.Annotations["related_logs"]
 	}
 
 	// Only extract and execute query if there's a logs URL
@@ -274,7 +274,7 @@ func processAlert(s *Server, w http.ResponseWriter, alert Alert) {
 			}
 		}
 	} else {
-		log.Printf("Alert %s does not contain related.logs URL, skipping query", alert.Fingerprint)
+		log.Printf("Alert %s does not contain related_logs URL, skipping query", alert.Fingerprint)
 	}
 
 	// Create alert metric
@@ -444,7 +444,7 @@ func debugProcessAlert(alert Alert, config *Config) error {
 
 	// Get logs URL from annotations if they exist
 	if alert.Annotations != nil {
-		logsURL = alert.Annotations["related.logs"]
+		logsURL = alert.Annotations["related_logs"]
 	}
 
 	// Only extract and execute query if there's a logs URL
@@ -491,7 +491,7 @@ func debugProcessAlert(alert Alert, config *Config) error {
 			}
 		}
 	} else {
-		fmt.Printf("Alert %s does not contain related.logs URL, skipping query\n", alert.Fingerprint)
+		fmt.Printf("Alert %s does not contain related_logs URL, skipping query\n", alert.Fingerprint)
 	}
 
 	// Store alert metric in database with API response details
@@ -626,8 +626,8 @@ func executeQueryRange(request QueryRangeRequest, signOzConfig SignOzConfig) (*Q
 		return nil, fmt.Errorf("error marshaling request: %v", err)
 	}
 
-	// Log the complete request for debugging
-	//log.Printf("Executing query with request:\n%s", string(requestJSON))
+	//Log the complete request for debugging
+	log.Printf("Executing query with request:\n%s", string(requestJSON))
 
 	// Create HTTP request (using the same JSON for the request body)
 	req, err := http.NewRequest("POST", signOzConfig.APIURL, bytes.NewBuffer(requestJSON))

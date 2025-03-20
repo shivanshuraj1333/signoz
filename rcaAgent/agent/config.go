@@ -2,11 +2,11 @@ package agent
 
 import (
 	"fmt"
+	"github.com/joho/godotenv"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
-
-	"github.com/joho/godotenv"
 )
 
 // Config holds all configuration parameters
@@ -47,8 +47,13 @@ type QueryConfig struct {
 
 // LoadConfig loads configuration from environment variables
 func LoadConfig() (*Config, error) {
-	// Load .env file
-	if err := godotenv.Load(); err != nil {
+
+	pwd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	} // Load .env file
+
+	if err := godotenv.Load(filepath.Join(pwd, "rcaAgent/.env")); err != nil {
 		return nil, fmt.Errorf("error loading .env file: %v", err)
 	}
 
@@ -89,8 +94,8 @@ func LoadConfig() (*Config, error) {
 			SSLMode:  getEnvOrDefault("DB_SSL_MODE", "disable"),
 		},
 		SignOz: SignOzConfig{
-			APIURL: getEnvOrDefault("SIGNOZ_API_URL", "https://nightswatch.signoz.cloud/api/v3/query_range"),
-			APIKey: getEnvOrDefault("SIGNOZ_API_KEY", "LOPoPXo8fvlIdF7Tlm1Pal6AQnelQ/nN8A2+diGvjzk="),
+			APIURL: getEnvOrDefault("SIGNOZ_API_URL", ""),
+			APIKey: getEnvOrDefault("SIGNOZ_API_KEY", ""),
 		},
 		Query: QueryConfig{
 			Step:        queryStep,
