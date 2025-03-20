@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-agent
+  labels:
+    app: rca-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rca-agent
+  template:
+    metadata:
+      labels:
+        app: rca-agent
+    spec:
+      containers:
+      - name: rca-agent
+        image: ${REGISTRY}/rca-agent:${TAG}
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: PORT
+        - name: WEBHOOK_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: WEBHOOK_PATH
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: DB_PORT
+        - name: DB_USER
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: rca-agent-secrets
+              key: DB_PASSWORD
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: DB_NAME
+        - name: DB_SSL_MODE
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: DB_SSL_MODE
+        - name: SIGNOZ_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: SIGNOZ_API_URL
+        - name: SIGNOZ_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: rca-agent-secrets
+              key: SIGNOZ_API_KEY
+        - name: SIGNOZ_RULES_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: SIGNOZ_RULES_API_URL
+        - name: QUERY_STEP
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: QUERY_STEP
+        - name: QUERY_WINDOW_HOURS
+          valueFrom:
+            configMapKeyRef:
+              name: rca-agent-config
+              key: QUERY_WINDOW_HOURS
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10 

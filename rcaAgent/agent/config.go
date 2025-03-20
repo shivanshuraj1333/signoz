@@ -53,7 +53,7 @@ func LoadConfig() (*Config, error) {
 		panic(err)
 	} // Load .env file
 
-	if err := godotenv.Load(filepath.Join(pwd, "rcaAgent/.env")); err != nil {
+	if err := godotenv.Load(filepath.Join(pwd, ".env")); err != nil {
 		return nil, fmt.Errorf("error loading .env file: %v", err)
 	}
 

@@ -1,0 +1,71 @@
+# Kubernetes deployment Makefile
+
+# Docker image parameters
+REGISTRY ?= docker.io/yourusername
+IMAGE_NAME ?= rca-agent
+TAG ?= latest
+IMAGE = $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+
+# Kubernetes namespace
+NAMESPACE ?= default
+
+# Kubernetes context
+KUBE_CONTEXT ?= minikube
+
+.PHONY: docker-build docker-push k8s-deploy k8s-delete k8s-apply k8s-config k8s-secret
+
+# Build Docker image
+docker-build:
+	docker build -t $(IMAGE) .
+
+# Push Docker image to registry
+docker-push: docker-build
+	docker push $(IMAGE)
+
+# Generate Kubernetes configuration
+k8s-config:
+	@echo "Creating ConfigMap from .env.example..."
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) create configmap rca-agent-config \
+		--from-env-file=.env.example \
+		--dry-run=client -o yaml > k8s/configmap.yaml
+
+# Create Kubernetes secret
+k8s-secret:
+	@echo "Please enter the database password:"
+	@read DB_PASSWORD && \
+	echo "Please enter the SignOz API key:" && \
+	read SIGNOZ_API_KEY && \
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) create secret generic rca-agent-secrets \
+		--from-literal=DB_PASSWORD=$$DB_PASSWORD \
+		--from-literal=SIGNOZ_API_KEY=$$SIGNOZ_API_KEY \
+		--dry-run=client -o yaml > k8s/secret.yaml
+
+# Apply Kubernetes manifests
+k8s-apply:
+	@echo "Applying Kubernetes manifests..."
+	envsubst < k8s/deployment.yaml | kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) apply -f -
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) apply -f k8s/service.yaml
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) apply -f k8s/configmap.yaml
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) apply -f k8s/secret.yaml
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) apply -f k8s/postgres.yaml
+
+# Deploy to Kubernetes
+k8s-deploy: docker-build docker-push k8s-apply
+	@echo "Deployment completed successfully"
+
+# Delete deployment from Kubernetes
+k8s-delete:
+	@echo "Deleting deployment from Kubernetes..."
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) delete -f k8s/deployment.yaml --ignore-not-found=true
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) delete -f k8s/service.yaml --ignore-not-found=true
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) delete -f k8s/configmap.yaml --ignore-not-found=true
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) delete -f k8s/secret.yaml --ignore-not-found=true
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) delete -f k8s/postgres.yaml --ignore-not-found=true
+
+# View logs
+k8s-logs:
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) logs -f deployment/rca-agent
+
+# Port-forward to access the service
+k8s-port-forward:
+	kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) port-forward svc/rca-agent 8080:8080 

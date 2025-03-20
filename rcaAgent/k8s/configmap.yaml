@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rca-agent-config
+data:
+  PORT: "8080"
+  WEBHOOK_PATH: "/webhook"
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_USER: "postgres"
+  DB_NAME: "signoz_alerts"
+  DB_SSL_MODE: "disable"
+  SIGNOZ_API_URL: "https://api.signoz.io/api/v3/query_range"
+  SIGNOZ_RULES_API_URL: "https://api.signoz.io"
+  QUERY_STEP: "60"
+  QUERY_WINDOW_HOURS: "1" 
